@@ -1,0 +1,10 @@
+{
+    "name": "Toketanounity.Okuniaudio.Editor",
+    "references": [
+      "Toketanounity.Okuniaudio"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": []
+}

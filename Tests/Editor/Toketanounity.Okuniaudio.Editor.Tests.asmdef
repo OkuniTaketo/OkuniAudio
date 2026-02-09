@@ -1,0 +1,14 @@
+{
+    "name": "Toketanounity.Okuniaudio.Editor.Tests",
+    "references": [
+        "Toketanounity.Okuniaudio.Editor",
+        "Toketanounity.Okuniaudio"
+    ],
+    "optionalUnityReferences": [
+        "TestAssemblies"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": []
+}
