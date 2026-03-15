@@ -1,12 +1,12 @@
 using UnityEngine;
-using Cysharp.Threading.Tasks;
-using DG.Tweening;
 using System.Threading;
 
 namespace Okuni.Audio
 {
     public class AudioPlayer : MonoBehaviour
     {
+        private bool _isPause = false;
+
         [SerializeField]
         private AudioSource _audioSource = null;
 
@@ -14,114 +14,94 @@ namespace Okuni.Audio
 
         public void Pause()
         {
+            _isPause = true;
             _audioSource.Pause();
         }
 
         public void Resume()
         {
+            _isPause = false;
             _audioSource.UnPause();
         }
 
         /// <summary>
-        /// クリップ<paramref name="audioClipInfo"/>を再生する。
+        /// 指定された <see cref="AudioClipInfo"/> を再生します。
+        /// フェードインやループ再生に対応し、ループする場合はフェードインまで待機します。
+        /// すでに再生中の音声がある場合は停止されます。
         /// </summary>
-        /// <param name="audioClipInfo"></param>
-        /// <param name="loop">クリップ</param>
-        /// <param name="fadeInTime">フェードイン時間</param>
-        public void PlayClip(AudioClipInfo audioClipInfo, bool loop = false, float fadeInTime = 0)
+        /// <param name="audioClipInfo">再生する音声情報</param>
+        /// <param name="loop">ループ再生するかどうか</param>
+        /// <param name="fadeInDuration">フェードインにかける時間（秒）</param>
+        /// <param name="cancellationToken">外部から再生処理をキャンセルするためのトークン</param>
+        /// <returns>再生が終了するかキャンセルされるまで待機する <see cref="Awaitable"/></returns>
+        public async Awaitable Play(AudioClipInfo audioClipInfo, bool loop = false, float fadeInDuration = 0f, CancellationToken cancellationToken = default)
         {
-            if (_audioSource == null)
-            {
-                return;
-            }
-
-            if (audioClipInfo == null || audioClipInfo.AudioClip == null)
-            {
-                return;
-            }
-
-            //音声が既に再生されている時は止める
-            _audioSource.DOKill();
-
+            // 既存再生を停止
             _audioSource.Stop();
 
-            //オーディオソースを初期化して再生する。
-            _audioSource.volume = 0;
+            // 初期化
+            _audioSource.volume = 0f;
             _audioSource.loop = loop;
             _audioSource.clip = audioClipInfo.AudioClip;
 
+            //前回の再生をキャンセル
             _innerCts?.Cancel();
             _innerCts = new();
+            var token = _innerCts.Token;
 
+            // 再生
             _audioSource.Play();
 
-            _audioSource.DOFade(audioClipInfo.Volume, fadeInTime)
-                .SetLink(gameObject);
-        }
+            float targetVolume = audioClipInfo.Volume;
 
-        /// <summary>
-        /// クリップ<paramref name="audioClipInfo"/>を再生する。
-        /// </summary>
-        /// <param name="audioClipInfo"></param>
-        /// <param name="loop">クリップ</param>
-        /// <param name="fadeInTime">フェードイン時間</param>
-        /// <param name="cancellationToken">キャンセルトークン</param>
-        /// <returns></returns>
-        public async UniTask PlayClipAsync(AudioClipInfo audioClipInfo, bool loop = false, float fadeInTime = 0, CancellationToken cancellationToken = default)
-        {
-            if (_audioSource == null)
+            if (fadeInDuration > 0f)
             {
-                return;
+                //フェードインする場合
+                float elapsedTime = 0f;
+
+                //フェードインが完了するかキャンセルされまで待機
+                //再生がフェードイン中に終了しても抜ける。
+                while (elapsedTime < fadeInDuration && !token.IsCancellationRequested)
+                {
+                    if (_isPause)
+                    {
+                        // 一時停止状態の時、次のフレームまで待機してスキップ
+                        await Awaitable.NextFrameAsync(cancellationToken);
+                        continue;
+                    }
+
+                    if (!_audioSource.isPlaying)
+                    {
+                        //一時停止中でなければ再生終了時は抜ける。
+                        break;
+                    }
+
+
+                    // 経過時間を0~1の範囲に制限・正規化
+                    elapsedTime += Time.deltaTime;
+                    float t = Mathf.Clamp01(elapsedTime / fadeInDuration);
+
+                    //正規化された経過時間を元にボリュームを変化させる
+                    _audioSource.volume = Mathf.Lerp(0f, targetVolume, t);
+
+                    // 次のフレームまで待機
+                    await Awaitable.NextFrameAsync(cancellationToken);
+                }
             }
 
-            if (audioClipInfo == null || audioClipInfo.AudioClip == null)
+            // まだ再生中ならボリュームを目標値に変更
+            if (!token.IsCancellationRequested)
             {
-                return;
+                _audioSource.volume = targetVolume;
             }
 
-            //音声が既に再生されている時は止める
-            _audioSource.DOKill();
-
-            _audioSource.Stop();
-
-            //オーディオソースを初期化して再生する。
-            _audioSource.volume = 0;
-            _audioSource.loop = loop;
-            _audioSource.clip = audioClipInfo.AudioClip;
-
-            _audioSource.Play();
-
-            _audioSource.DOFade(audioClipInfo.Volume, fadeInTime)
-                .SetLink(gameObject).ToUniTask(cancellationToken: cancellationToken).Forget();
-
-            await WaitForClipToEnd(cancellationToken);
-        }
-
-        /// <summary>
-        /// クリップが終了するまで待機する。
-        /// </summary>
-        /// <returns></returns>
-        private async UniTask WaitForClipToEnd(CancellationToken cancellationToken = default)
-        {
-            if (_audioSource == null)
+            // 再生終了まで待機（loopなら待たない）
+            if (!loop)
             {
-                return;
-            }
-
-            //音声が終了するまで待機する。
-            _innerCts?.Cancel();
-            _innerCts = new();
-            CancellationToken token = _innerCts.Token;
-
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _innerCts.Token);
-
-            //音声が再生されるまで待機する。
-            await UniTask.WaitUntil(() => _audioSource.isPlaying, cancellationToken: linkedCts.Token);
-
-            //音声が終了するまで待機する。
-            if (_audioSource != null)
-            {
-                await UniTask.WaitUntil(() => !_audioSource.isPlaying, cancellationToken: linkedCts.Token);
+                while (_audioSource.isPlaying && !token.IsCancellationRequested)
+                {
+                    await Awaitable.NextFrameAsync(cancellationToken);
+                }
             }
         }
 
@@ -155,53 +135,53 @@ namespace Okuni.Audio
             Destroy(tempAudio, audioClipInfo.AudioClip.length);
         }
 
-
-        /// <summary>
-        /// 音声を止める。
-        /// </summary>
-        /// <param name="fadeTime">フェードアウト時間</param>
-        public void StopSound(float fadeOutTime = 0)
+        public async Awaitable Stop(float fadeOutDuration = 0f, CancellationToken cancellationToken = default)
         {
-            if (_audioSource == null || !_audioSource.isPlaying)
-            {
-                return;
-            }
-
-            //音声が終了するまで待機する。
+            //実行中の非同期処理をキャンセル
             _innerCts?.Cancel();
-
-            _audioSource.DOKill();
-
-            _audioSource.DOFade(0f, fadeOutTime)
-                .OnComplete(() => _audioSource.Stop())
-                .SetLink(gameObject);
-        }
-
-        /// <summary>
-        /// 音声を止める。(非同期)
-        /// </summary>
-        /// <param name="fadeTime">フェードアウト時間</param>
-        public async UniTask StopAsync(float fadeDuration = 0, CancellationToken cancellationToken = default)
-        {
-            if (_audioSource == null || !_audioSource.isPlaying)
-            {
-                return;
-            }
-
-            //音声が終了するまで待機する。
-            _innerCts?.Cancel();
-
-            _audioSource.DOKill();
-
             _innerCts = new();
             CancellationToken token = _innerCts.Token;
 
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _innerCts.Token);
 
-            await _audioSource.DOFade(0f, fadeDuration)
-                .OnComplete(() => _audioSource.Stop())
-                .SetLink(gameObject)
-                .WithCancellation(linkedCts.Token);
+            if (fadeOutDuration > 0f)
+            {
+                //フェードインする場合
+                float elapsedTime = 0f;
+                float initialVolume = _audioSource.volume;
+
+                //フェードインが完了するかキャンセルされまで待機
+                //再生がフェードイン中に終了しても抜ける。
+                while (elapsedTime < fadeOutDuration && !token.IsCancellationRequested)
+                {
+                    if (_isPause)
+                    {
+                        // 一時停止状態の時、次のフレームまで待機してスキップ
+                        await Awaitable.NextFrameAsync(cancellationToken);
+                        continue;
+                    }
+
+                    if (!_audioSource.isPlaying)
+                    {
+                        //一時停止中でなければ再生終了時は抜ける。
+                        break;
+                    }
+
+
+                    // 経過時間を0~1の範囲に制限・正規化
+                    elapsedTime += Time.deltaTime;
+                    float t = Mathf.Clamp01(elapsedTime / fadeOutDuration);
+
+                    //正規化された経過時間を元にボリュームを変化させる
+                    _audioSource.volume = Mathf.Lerp(initialVolume, 0f, t);
+
+                    // 次のフレームまで待機
+                    await Awaitable.NextFrameAsync(cancellationToken);
+                }
+            }
+
+            // まだ再生中ならボリュームを目標値に変更
+            _audioSource.volume = 0f;
         }
 
         private void OnDestroy()
