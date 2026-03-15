@@ -2,7 +2,7 @@ using UnityEngine;
 using UnityEngine.Audio;
 using UnityEngine.UI;
 
-namespace Okuni.MaroJam0116
+namespace Okuni.Audio
 {
     public class AudioVolumeSlider : MonoBehaviour
     {
